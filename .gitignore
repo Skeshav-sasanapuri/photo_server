@@ -1,0 +1,29 @@
+# created by virtualenv automatically
+# Ignore Python bytecode
+__pycache__/
+*.py[cod]
+
+# Ignore virtual environment
+venv/
+*.venv
+
+# Ignore uploads directory where images are stored
+uploads/
+
+# Ignore log files
+*.log
+
+# Ignore environment variable files
+.env
+
+# Ignore PyCharm project files
+.idea/
+
+# Ignore macOS system files
+.DS_Store
+
+# Ignore Windows thumbnail cache
+Thumbs.db
+
+# Ignore Jupyter Notebook checkpoints
+.ipynb_checkpoints/
