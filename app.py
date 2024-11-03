@@ -10,12 +10,10 @@ from werkzeug.utils import secure_filename
 from PIL import Image
 from PIL.ExifTags import TAGS
 from datetime import datetime
-from pymongo import MongoClient  # Import MongoClient to connect to MongoDB
-from celery import Celery
+from pymongo import MongoClient
 from yolo import process_image
 
 app = Flask(__name__)
-celery = Celery(app.name, broker='redis://localhost:6379/0')  # You can use RabbitMQ as an alternative
 
 # Directory to store uploaded images
 UPLOAD_FOLDER = 'uploads'
@@ -25,10 +23,10 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
 
 # MongoDB connection setup
-
-client = MongoClient('mongodb://localhost:27017/')  # Change the connection string as needed
+client = MongoClient('mongodb://localhost:27017/')  # Change connection based on type of implementation
 db = client['photo_storage']  # Database name
 photos_collection = db['photos']  # Collection name
+unprocessed_ids_collection = db['unprocessed_ids']  # Collection for unprocessed IDs
 
 
 # Function to check allowed file extensions
@@ -52,51 +50,54 @@ def extract_date_taken(image):
 # Endpoint for uploading images
 @app.route('/upload', methods=['POST'])
 def upload_file():
-    if 'file' not in request.files:
+    if 'files[]' not in request.files:
         return jsonify({"error": "No file part in the request."}), 400
 
-    file = request.files['file']
+    files = request.files.getlist('files[]')
 
-    if file.filename == '':
+    if not files:
         return jsonify({"error": "No file selected."}), 400
+    for file in files:
+        if file and allowed_file(file.filename):
+            filename = secure_filename(file.filename)
 
-    if file and allowed_file(file.filename):
-        filename = secure_filename(file.filename)
+            # Open the file in memory and extract the date taken
+            image = Image.open(file)
+            date_taken = extract_date_taken(image)
 
-        # Open the file in memory and extract the date taken
-        image = Image.open(file)
-        date_taken = extract_date_taken(image)
+            # Use current date if EXIF data has no date information
+            if date_taken is None:
+                date_taken = datetime.today().date()
 
-        # Use current date if EXIF data has no date information
-        if date_taken is None:
-            date_taken = datetime.today().date()
+            # Define the final directory and save path
+            date_folder = os.path.join(app.config['UPLOAD_FOLDER'], str(date_taken))
+            os.makedirs(date_folder, exist_ok=True)
+            file_path = os.path.join(date_folder, filename)
 
-        # Define the final directory and save path
-        date_folder = os.path.join(app.config['UPLOAD_FOLDER'], str(date_taken))
-        os.makedirs(date_folder, exist_ok=True)
-        file_path = os.path.join(date_folder, filename)
+            # Save the file directly to the target folder
+            file.seek(0)  # Reset file pointer after reading for EXIF
+            file.save(file_path)
 
-        # Save the file directly to the target folder
-        file.seek(0)  # Reset file pointer after reading for EXIF
-        file.save(file_path)
+            # Prepare metadata to save to MongoDB
+            metadata = {
+                'filename': filename,
+                'path': file_path,
+                'upload_date': datetime.now(),
+                'date_taken': date_taken.strftime('%Y-%m-%d'),
+                'tag': []  # Initialize tags to store YOLO detections
+            }
 
-        # Prepare metadata to save to MongoDB
-        metadata = {
-            'filename': filename,
-            'path': file_path,
-            'upload_date': datetime.now(),
-            'date_taken': date_taken.strftime('%Y-%m-%d')
-        }
+            # Insert metadata into MongoDB
+            insert_result = photos_collection.insert_one(metadata)
+            document_id = insert_result.inserted_id
 
-        # Insert metadata into MongoDB
-        photos_collection.insert_one(metadata)
-        # Call the YOLO processing task asynchronously
-        process_image.delay(file_path)
+            # Store the document ID in the unprocessed_ids collection for YOLO to process
+            unprocessed_ids_collection.insert_one({'_id': document_id})
 
-        return jsonify(
-            {"message": "File uploaded successfully!", "filename": filename, "date_taken": str(date_taken)}), 201
+    return jsonify(
+        {"message": "Files uploaded successfully!"}), 201
 
-    return jsonify({"error": "File type not allowed."}), 400
+
 
 
 # Endpoint for retrieving photos
@@ -112,7 +113,6 @@ def get_photos():
     if date_taken:
         query['date_taken'] = date_taken
 
-    # You can implement tags in your metadata if needed
     # For now, let's just use the filename as a simple example of a tag
     if tag:
         query['filename'] = {'$regex': tag, '$options': 'i'}  # Case-insensitive match
