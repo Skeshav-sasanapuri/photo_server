@@ -5,15 +5,16 @@ Written by: Sai Keshav Sasanapuri @Skeshav-sasanapuri
 
 # Importing libraries
 import os
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, flash
 from werkzeug.utils import secure_filename
 from PIL import Image
 from PIL.ExifTags import TAGS
 from datetime import datetime
 from pymongo import MongoClient
-from yolo import process_image
+from flask_cors import CORS  # Import CORS
 
 app = Flask(__name__)
+CORS(app)  # This will enable CORS for all routes
 
 # Directory to store uploaded images
 UPLOAD_FOLDER = 'uploads'
@@ -31,6 +32,7 @@ unprocessed_ids_collection = db['unprocessed_ids']  # Collection for unprocessed
 
 # Function to check allowed file extensions
 def allowed_file(filename):
+    print(filename)
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
@@ -52,7 +54,6 @@ def extract_date_taken(image):
 def upload_file():
     if 'files[]' not in request.files:
         return jsonify({"error": "No file part in the request."}), 400
-
     files = request.files.getlist('files[]')
 
     if not files:
@@ -94,15 +95,13 @@ def upload_file():
             # Store the document ID in the unprocessed_ids collection for YOLO to process
             unprocessed_ids_collection.insert_one({'_id': document_id})
 
-    return jsonify(
-        {"message": "Files uploaded successfully!"}), 201
-
-
+    return jsonify({"message": "Files uploaded successfully!"}), 200
 
 
 # Endpoint for retrieving photos
 @app.route('/photos', methods=['GET'])
 def get_photos():
+    print("came here, back")
     query = {}
 
     # Get filter parameters from query string
@@ -111,16 +110,35 @@ def get_photos():
 
     # Filter by date_taken if provided
     if date_taken:
-        query['date_taken'] = date_taken
+        try:
+            date_obj = datetime.strptime(date_taken, '%Y-%m-%d').date()  # Adjust format if needed
+            query['date_taken'] = date_obj.strftime('%Y-%m-%d')  # Match the format in the database
+        except ValueError:
+            flash("Invalid date format. Please use YYYY-MM-DD.", "error")
+            return jsonify({"error": "Invalid date format."}), 400
 
-    # For now, let's just use the filename as a simple example of a tag
+    # Handle multiple tags
     if tag:
-        query['filename'] = {'$regex': tag, '$options': 'i'}  # Case-insensitive match
+        tags_list = [t.strip() for t in tag.split(',')]
+        query['tag'] = {'$in': tags_list}  # Match any of the specified tags
 
-    # Retrieve photos from MongoDB based on the query
-    photos = list(photos_collection.find(query, {'_id': 0}))  # Exclude MongoDB _id field from results
+    # Retrieve photo documents from MongoDB based on the query
+    photo_docs = list(photos_collection.find(query, {'_id': 0}))  # Exclude MongoDB _id field from results
+
+    # Prepare the response list with full data
+    photos = []
+    for doc in photo_docs:
+        photo_path = doc.get('path')  # Use the full path from MongoDB directly
+        if os.path.exists(photo_path):  # Check if the photo exists on the server
+            photo_data = {
+                'path': photo_path,  # Keep the full path for the response
+                'filename': os.path.basename(photo_path),  # Extract filename from the path
+                'date_taken': doc.get('date_taken'),  # Add other relevant fields from MongoDB
+            }
+            photos.append(photo_data)
 
     return jsonify(photos), 200
+
 
 
 # Test route to ensure the server is working

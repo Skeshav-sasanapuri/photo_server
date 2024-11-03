@@ -3,7 +3,7 @@
 # Start MongoDB
 echo "Starting MongoDB..."
 mongod --dbpath "C:\\data\\db" --bind_ip 127.0.0.1 --logpath "mongodb.log" &
-sleep 10  # Give MongoDB time to start
+sleep 5  # Give MongoDB time to start
 
 # Start Flask application in production mode
 echo "Starting Flask application..."
